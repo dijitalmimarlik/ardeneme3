@@ -34,7 +34,6 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 const MODEL_URL = new URLSearchParams(location.search).get('model') || 'model.glb';
@@ -85,7 +84,8 @@ durumGuncelle(status.text, 0);
 // ---------- Sahne ----------
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 50);
-camera.position.set(0, 0.2, 1.0);
+camera.position.set(0, 0, 2.2);
+camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(devicePixelRatio);
@@ -94,8 +94,60 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement); // AR dışı önizleme
-controls.enableDamping = true;
+// ---------- PC (fare / dokunmatik): model kendi merkezi etrafında döner ----------
+// Sol tuş sürükle = çevir | sağ tuş (veya Shift) sürükle = taşı | tekerlek = zoom | çift tık = sıfırla
+// Dokunmatik: tek parmak = çevir, iki parmak = taşı + zoom
+const XEKSEN = new THREE.Vector3(1, 0, 0);
+const cv = renderer.domElement;
+cv.style.touchAction = 'none';
+cv.addEventListener('contextmenu', e => e.preventDefault());
+const ptrs = new Map();
+const pcAktif = () => !renderer.xr.isPresenting;
+function panYap(dx, dy) {
+  const dist = camera.position.distanceTo(pivot.position);
+  const f = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight;
+  pivot.position.x += dx * f;
+  pivot.position.y -= dy * f;
+}
+function zoomYap(k) {
+  pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * k, 0.02, 30));
+}
+cv.addEventListener('pointerdown', e => {
+  if (!pcAktif()) return;
+  cv.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, b: e.button });
+});
+cv.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId);
+  if (!p || !pcAktif()) return;
+  if (ptrs.size === 1) {
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    if (p.b === 2 || p.b === 1 || e.shiftKey) panYap(dx, dy);
+    else {
+      pivot.rotateOnWorldAxis(YEKSEN, dx * 0.008);   // sağa sürükle = model sağa döner
+      pivot.rotateOnWorldAxis(XEKSEN, dy * 0.008);   // aşağı sürükle = model aşağı döner
+    }
+    p.x = e.clientX; p.y = e.clientY;
+  } else if (ptrs.size === 2) {
+    const once = [...ptrs.values()].map(q => ({ x: q.x, y: q.y }));
+    p.x = e.clientX; p.y = e.clientY;
+    const sonra = [...ptrs.values()];
+    panYap((sonra[0].x + sonra[1].x - once[0].x - once[1].x) / 2,
+           (sonra[0].y + sonra[1].y - once[0].y - once[1].y) / 2);
+    const dO = Math.hypot(once[0].x - once[1].x, once[0].y - once[1].y);
+    const dS = Math.hypot(sonra[0].x - sonra[1].x, sonra[0].y - sonra[1].y);
+    if (dO > 0) zoomYap(dS / dO);
+  }
+});
+const birak = e => ptrs.delete(e.pointerId);
+cv.addEventListener('pointerup', birak);
+cv.addEventListener('pointercancel', birak);
+cv.addEventListener('wheel', e => {
+  if (!pcAktif()) return;
+  e.preventDefault();
+  zoomYap(Math.exp(-e.deltaY * 0.001));
+}, { passive: false });
+cv.addEventListener('dblclick', () => { if (pcAktif()) sifirla(); });
 
 document.body.appendChild(ARButton.createButton(renderer, {
   requiredFeatures: ['hit-test'],
@@ -550,12 +602,8 @@ renderer.setAnimationLoop((t, frame) => {
       if (Math.abs(y) > 0.15)             // ileri = zoom in, geri = zoom out
         pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp(-y * 1.5 * dt), 0.02, 30));
       if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
-      const b = gp.buttons[5] && gp.buttons[5].pressed;        // B / Y: birebir (gerçek) boyut
-      if (b && !btnPrev[src.handedness + 'B']) {
-        const gercek = 1 / fitScale;
-        const gercekte = Math.abs(pivot.scale.x - gercek) < gercek * 1e-3;
-        pivot.scale.setScalar(gercekte ? homeScale : gercek);  // tekrar basınca sığdırılmış boyuta döner
-      }
+      const b = gp.buttons[5] && gp.buttons[5].pressed;        // B / Y: modeli ilk haline sıfırla
+      if (b && !btnPrev[src.handedness + 'B']) sifirla();
       btnPrev[src.handedness + 'B'] = b;
       const basili = gp.buttons[3] && gp.buttons[3].pressed;   // thumbstick tıklaması
       if (basili && !btnPrev[src.handedness]) sifirla();
@@ -572,8 +620,6 @@ renderer.setAnimationLoop((t, frame) => {
         }
       }
     });
-  } else {
-    controls.update();
   }
   renderer.render(scene, camera);
 });
