@@ -26,6 +26,18 @@
     <span id="durum">Sayfa başlatılıyor...</span>
     <div id="cubuk"><div id="dolu"></div></div>
   </div>
+  <b>Kontroller (AR içinde)</b><br>
+  <b>Kumandayla:</b><br>
+  &bull; Thumbstick ileri/geri = zoom (ileri = yakınlaş, geri = uzaklaş)<br>
+  &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
+  &bull; Thumbstick'e bas = modeli anında sıfırla<br>
+  &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
+  &bull; Grip (basılı tut) = modeli her eksende taşı<br>
+  &bull; A veya B (sol kumandada X veya Y) basılı tut = yatay dönüş (yön) korunur, diğer eksenler yavaşça ilk haline döner<br>
+  <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
+  &bull; Sağ el pinch (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
+  &bull; Sol el pinch (basılı tut) = modeli taşı<br>
+  &bull; İki el birden pinch = zoom (elleri aç/kapat)
 </div>
 
 <script type="module">
@@ -35,7 +47,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 const MODEL_URL = 'model.glb';
-const HEDEF_BOYUT = 1; // metre
+const HEDEF_BOYUT = 0.3; // metre
 
 const durumEl = document.getElementById('durum');
 const doluEl = document.getElementById('dolu');
@@ -108,7 +120,6 @@ scene.add(panel);
 const pivot = new THREE.Group();
 scene.add(pivot);
 
-let fitScale = 1;   // modeli HEDEF_BOYUT'a sığdıran çarpan; gerçek boyut = pivot ölçeği 1/fitScale
 function pivotaEkle(obj) {
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
@@ -118,7 +129,6 @@ function pivotaEkle(obj) {
   const kap = new THREE.Group();
   kap.add(obj);
   kap.scale.setScalar(s);
-  fitScale = s;
   pivot.add(kap);
 }
 
@@ -430,18 +440,11 @@ renderer.setAnimationLoop((t, frame) => {
       if (Math.abs(y) > 0.15)             // ileri = zoom in, geri = zoom out
         pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp(-y * 1.5 * dt), 0.02, 30));
       if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
-      const b = gp.buttons[5] && gp.buttons[5].pressed;        // B / Y: birebir (gerçek) boyut
-      if (b && !btnPrev[src.handedness + 'B']) {
-        const gercek = 1 / fitScale;
-        const gercekte = Math.abs(pivot.scale.x - gercek) < gercek * 1e-3;
-        pivot.scale.setScalar(gercekte ? homeScale : gercek);  // tekrar basınca sığdırılmış boyuta döner
-      }
-      btnPrev[src.handedness + 'B'] = b;
       const basili = gp.buttons[3] && gp.buttons[3].pressed;   // thumbstick tıklaması
       if (basili && !btnPrev[src.handedness]) sifirla();
       btnPrev[src.handedness] = basili;
-      const ab = gp.buttons[4] && gp.buttons[4].pressed;   // A / X
-      if (ab) {                           // A / X: yaw (yatay dönüş) korunur, diğer eksenler ilk haline döner
+      const ab = (gp.buttons[4] && gp.buttons[4].pressed) || (gp.buttons[5] && gp.buttons[5].pressed);
+      if (ab) {                           // A veya B: yaw (yatay dönüş) korunur, diğer eksenler ilk haline döner
         const q = pivot.quaternion;
         if (Math.hypot(q.y, q.w) > 1e-4) {
           twistQ.set(0, q.y, 0, q.w).normalize();                       // mevcut yaw
