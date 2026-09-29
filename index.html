@@ -121,29 +121,64 @@ scene.add(merkezIsareti);
 const pivot = new THREE.Group();
 scene.add(pivot);
 
-// Döndürme merkezi: 'kutu' = sınır kutusunun ortası, 'agirlik' = köşe noktalarının ortalaması (kütle merkezi gibi)
-const MERKEZ_MODU = 'kutu';
-function agirlikMerkezi(obj, box) {
-  const toplam = new THREE.Vector3(), v = new THREE.Vector3();
-  let n = 0;
+// Döndürme merkezi modları:
+//  'kirpilmis' = uç değerleri (%1-%99) atarak görünen geometrinin ortası (varsayılan; uzak/gizli parçalardan etkilenmez)
+//  'kutu'      = görünen geometrinin sınır kutusunun ortası
+//  'agirlik'   = köşe noktalarının ortalaması (kütle merkezi gibi)
+const MERKEZ_MODU = 'kirpilmis';
+
+function gorunenNoktalar(obj) {
+  obj.updateMatrixWorld(true);
+  const liste = [], v = new THREE.Vector3();
+  const gorunur = m => {
+    for (let o = m; o; o = o.parent) { if (!o.visible) return false; if (o === obj) break; }
+    return true;
+  };
   obj.traverse(m => {
-    if (!m.isMesh || !m.visible || !m.geometry.attributes.position) return;
+    if (!m.isMesh || !m.geometry.attributes.position || !gorunur(m)) return;
     const pos = m.geometry.attributes.position;
     const adim = Math.max(1, Math.floor(pos.count / 20000));
     for (let i = 0; i < pos.count; i += adim) {
       v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
-      toplam.add(v); n++;
+      liste.push(v.x, v.y, v.z);
     }
   });
-  return n ? toplam.divideScalar(n) : box.getCenter(new THREE.Vector3());
+  return liste;
+}
+
+function merkezVeBoyut(obj) {
+  const p = gorunenNoktalar(obj);
+  if (!p.length) {
+    const box = new THREE.Box3().setFromObject(obj, true);
+    return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+  }
+  const n = p.length / 3;
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], top = [0, 0, 0];
+  for (let i = 0; i < p.length; i++) {
+    const k = i % 3;
+    if (p[i] < mn[k]) mn[k] = p[i];
+    if (p[i] > mx[k]) mx[k] = p[i];
+    top[k] += p[i];
+  }
+  const c = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    if (MERKEZ_MODU === 'agirlik') c[k] = top[k] / n;
+    else if (MERKEZ_MODU === 'kirpilmis' && n > 100) {
+      const d = new Float32Array(n);
+      for (let i = 0; i < n; i++) d[i] = p[i * 3 + k];
+      d.sort();
+      c[k] = (d[Math.floor(n * 0.01)] + d[Math.ceil(n * 0.99) - 1]) / 2;
+    } else c[k] = (mn[k] + mx[k]) / 2;
+  }
+  return {
+    center: new THREE.Vector3(c[0], c[1], c[2]),
+    size: new THREE.Vector3(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2])
+  };
 }
 let fitScale = 1;   // modeli HEDEF_BOYUT'a sığdıran çarpan; gerçek boyut = pivot ölçeği 1/fitScale
 function pivotaEkle(obj) {
   pivot.clear();
-  obj.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(obj, true);        // kesin (köşe noktası bazlı) sınır kutusu
-  const size = box.getSize(new THREE.Vector3());
-  const center = MERKEZ_MODU === 'agirlik' ? agirlikMerkezi(obj, box) : box.getCenter(new THREE.Vector3());
+  const { center, size } = merkezVeBoyut(obj);
   const s = HEDEF_BOYUT / Math.max(size.x, size.y, size.z, 1e-6);
   obj.position.sub(center);
   const kap = new THREE.Group();
