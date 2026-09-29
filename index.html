@@ -40,6 +40,7 @@ import { ARButton } from 'three/addons/webxr/ARButton.js';
 const MODEL_URL = new URLSearchParams(location.search).get('model') || 'model.glb';
 const HEDEF_BOYUT = 1; // metre
 
+const bilgiEl = document.getElementById('bilgi');
 const durumEl = document.getElementById('durum');
 const doluEl = document.getElementById('dolu');
 const cubukEl = document.getElementById('cubuk');
@@ -107,16 +108,42 @@ dir.position.set(1, 3, 2);
 scene.add(dir);
 scene.add(panel);
 
+// döndürme merkezi işareti (yalnızca çevirirken görünür)
+const merkezIsareti = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 16, 16),
+  new THREE.MeshBasicMaterial({ color: 0xffd54f, depthTest: false, transparent: true, opacity: 0.9 })
+);
+merkezIsareti.renderOrder = 998;
+merkezIsareti.visible = false;
+scene.add(merkezIsareti);
+
 // pivot: model merkezinden döner ve ölçeklenir
 const pivot = new THREE.Group();
 scene.add(pivot);
 
+// Döndürme merkezi: 'kutu' = sınır kutusunun ortası, 'agirlik' = köşe noktalarının ortalaması (kütle merkezi gibi)
+const MERKEZ_MODU = 'kutu';
+function agirlikMerkezi(obj, box) {
+  const toplam = new THREE.Vector3(), v = new THREE.Vector3();
+  let n = 0;
+  obj.traverse(m => {
+    if (!m.isMesh || !m.visible || !m.geometry.attributes.position) return;
+    const pos = m.geometry.attributes.position;
+    const adim = Math.max(1, Math.floor(pos.count / 20000));
+    for (let i = 0; i < pos.count; i += adim) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      toplam.add(v); n++;
+    }
+  });
+  return n ? toplam.divideScalar(n) : box.getCenter(new THREE.Vector3());
+}
 let fitScale = 1;   // modeli HEDEF_BOYUT'a sığdıran çarpan; gerçek boyut = pivot ölçeği 1/fitScale
 function pivotaEkle(obj) {
   pivot.clear();
-  const box = new THREE.Box3().setFromObject(obj);
+  obj.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(obj, true);        // kesin (köşe noktası bazlı) sınır kutusu
   const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
+  const center = MERKEZ_MODU === 'agirlik' ? agirlikMerkezi(obj, box) : box.getCenter(new THREE.Vector3());
   const s = HEDEF_BOYUT / Math.max(size.x, size.y, size.z, 1e-6);
   obj.position.sub(center);
   const kap = new THREE.Group();
@@ -142,6 +169,7 @@ loader.setMeshoptDecoder(MeshoptDecoder);
 
 function hataGoster(mesaj) {
   console.error(mesaj);
+  bilgiEl.style.display = 'block';
   demoKup();
   durumGuncelle('HATA: ' + mesaj, 100, { error: true, done: true });
   panel.visible = true;
@@ -156,11 +184,13 @@ async function glbCoz(buf, taban) {
   pivotaEkle(g.scene);
   durumGuncelle('Model hazır ✓', 100, { done: true, error: false });
   cubukEl.style.display = 'none';
+  bilgiEl.style.display = 'none';       // model sorunsuz yüklendi: bilgi kutusu görünmesin
   setTimeout(() => { if (!status.error) panel.visible = false; }, 3000);
 }
 
 async function modelYukle(url) {
   try {
+    bilgiEl.style.display = 'block';
     durumGuncelle('Model yükleniyor %0', 0, { done: false, error: false });
     cubukEl.style.display = 'block';
     const r = await fetch(url);
@@ -197,6 +227,7 @@ document.getElementById('dosya').addEventListener('change', async e => {
   const f = e.target.files[0];
   if (!f) return;
   try {
+    bilgiEl.style.display = 'block';
     durumGuncelle('Dosya okunuyor...', 50, { done: false, error: false });
     await glbCoz(await f.arrayBuffer(), '');
   } catch (err) { hataGoster(err.message || String(err)); }
@@ -457,6 +488,12 @@ renderer.setAnimationLoop((t, frame) => {
     });
 
     elleriGuncelle();
+
+    const donuyor = controllers.some(c => c.userData.rot) ||
+      (hands.filter(h => h.userData.pinch).length === 1 && hands.some(h => h.userData.pinch && hand_sag(h)));
+    merkezIsareti.visible = donuyor;
+    merkezIsareti.position.copy(pivot.position);
+    merkezIsareti.scale.setScalar(0.008);
 
     // gözlemcinin bakış yönüne göre "sağ" ekseni (yatay düzlemde)
     const vp = frame.getViewerPose(renderer.xr.getReferenceSpace());
