@@ -26,28 +26,19 @@
     <span id="durum">Sayfa başlatılıyor...</span>
     <div id="cubuk"><div id="dolu"></div></div>
   </div>
-  <b>Kontroller (AR içinde)</b><br>
-  <b>Kumandayla:</b><br>
-  &bull; Thumbstick ileri/geri = zoom (ileri = yakınlaş, geri = uzaklaş)<br>
-  &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
-  &bull; Thumbstick'e bas = modeli anında sıfırla<br>
-  &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
-  &bull; Grip (basılı tut) = modeli her eksende taşı<br>
-  &bull; A veya B (sol kumandada X veya Y) basılı tut = yatay dönüş (yön) korunur, diğer eksenler yavaşça ilk haline döner<br>
-  <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
-  &bull; Sağ el pinch (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
-  &bull; Sol el pinch (basılı tut) = modeli taşı<br>
-  &bull; İki el birden pinch = zoom (elleri aç/kapat)
+  <input type="file" id="dosya" accept=".glb" style="font-size:12px;color:#ddd">
 </div>
 
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 
-const MODEL_URL = 'model.glb';
-const HEDEF_BOYUT = 0.3; // metre
+const MODEL_URL = new URLSearchParams(location.search).get('model') || 'model.glb';
+const HEDEF_BOYUT = 1; // metre
 
 const durumEl = document.getElementById('durum');
 const doluEl = document.getElementById('dolu');
@@ -120,7 +111,9 @@ scene.add(panel);
 const pivot = new THREE.Group();
 scene.add(pivot);
 
+let fitScale = 1;   // modeli HEDEF_BOYUT'a sığdıran çarpan; gerçek boyut = pivot ölçeği 1/fitScale
 function pivotaEkle(obj) {
+  pivot.clear();
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -129,6 +122,7 @@ function pivotaEkle(obj) {
   const kap = new THREE.Group();
   kap.add(obj);
   kap.scale.setScalar(s);
+  fitScale = s;
   pivot.add(kap);
 }
 
@@ -139,30 +133,74 @@ function demoKup() {
   ));
 }
 
-// ---------- Model yükleme (ilerleme çubuğu ile) ----------
-new GLTFLoader().load(
-  MODEL_URL,
-  g => {
-    pivotaEkle(g.scene);
-    durumGuncelle('Model hazır ✓', 100, { done: true });
-    setTimeout(() => { if (!status.error) panel.visible = false; }, 3000);
-  },
-  e => {
-    if (e.lengthComputable && e.total > 0) {
-      const p = Math.round(e.loaded / e.total * 100);
-      durumGuncelle(`Model yükleniyor %${p}`, p);
-    } else {
-      // sunucu boyut bildirmiyorsa (sıkıştırma vb.) yalnızca indirilen miktar
-      durumGuncelle(`Model yükleniyor ${(e.loaded / 1048576).toFixed(1)} MB`, 50);
+// ---------- Model yükleme (ilerleme çubuğu + ayrıntılı hata teşhisi) ----------
+const loader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+loader.setDRACOLoader(draco);
+loader.setMeshoptDecoder(MeshoptDecoder);
+
+function hataGoster(mesaj) {
+  console.error(mesaj);
+  demoKup();
+  durumGuncelle('HATA: ' + mesaj, 100, { error: true, done: true });
+  panel.visible = true;
+}
+
+async function glbCoz(buf, taban) {
+  const bas = new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(24, buf.byteLength)));
+  if (bas.startsWith('version https://git-lfs')) throw new Error('Dosya Git LFS işaretçisi, gerçek GLB değil');
+  if (bas.trimStart().startsWith('<')) throw new Error('Sunucu HTML döndürdü (dosya yolu yanlış olabilir)');
+  if (!bas.startsWith('glTF')) throw new Error('Dosya geçerli bir .glb değil (.gltf ise .glb\'ye çevirin)');
+  const g = await loader.parseAsync(buf, taban);
+  pivotaEkle(g.scene);
+  durumGuncelle('Model hazır ✓', 100, { done: true, error: false });
+  cubukEl.style.display = 'none';
+  setTimeout(() => { if (!status.error) panel.visible = false; }, 3000);
+}
+
+async function modelYukle(url) {
+  try {
+    durumGuncelle('Model yükleniyor %0', 0, { done: false, error: false });
+    cubukEl.style.display = 'block';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${new URL(url, location.href).href} adresinde dosya yok`);
+    const toplam = +r.headers.get('content-length') || 0;
+    const okuyucu = r.body.getReader();
+    const parcalar = [];
+    let yuklenen = 0;
+    for (;;) {
+      const { done, value } = await okuyucu.read();
+      if (done) break;
+      parcalar.push(value);
+      yuklenen += value.length;
+      if (toplam) {
+        const p = Math.min(99, Math.round(yuklenen / toplam * 100));
+        durumGuncelle(`Model yükleniyor %${p}`, p);
+      } else {
+        durumGuncelle(`Model yükleniyor ${(yuklenen / 1048576).toFixed(1)} MB`, 50);
+      }
     }
-  },
-  err => {
-    console.error(err);
-    demoKup();
-    durumGuncelle('model.glb yüklenemedi (dosya yok/yol yanlış?). Demo küp gösteriliyor.', 100,
-      { error: true, done: true });
+    const buf = new Uint8Array(yuklenen);
+    let o = 0;
+    for (const p of parcalar) { buf.set(p, o); o += p.length; }
+    durumGuncelle('Model işleniyor...', 99);
+    await glbCoz(buf.buffer, url.substring(0, url.lastIndexOf('/') + 1));
+  } catch (e) {
+    hataGoster(e.message || String(e));
   }
-);
+}
+modelYukle(MODEL_URL);
+
+// Bilgisayardan dosya seçerek deneme
+document.getElementById('dosya').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    durumGuncelle('Dosya okunuyor...', 50, { done: false, error: false });
+    await glbCoz(await f.arrayBuffer(), '');
+  } catch (err) { hataGoster(err.message || String(err)); }
+});
 
 // ---------- Yerleştirme halkası ----------
 const reticle = new THREE.Mesh(
@@ -440,11 +478,18 @@ renderer.setAnimationLoop((t, frame) => {
       if (Math.abs(y) > 0.15)             // ileri = zoom in, geri = zoom out
         pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp(-y * 1.5 * dt), 0.02, 30));
       if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
+      const b = gp.buttons[5] && gp.buttons[5].pressed;        // B / Y: birebir (gerçek) boyut
+      if (b && !btnPrev[src.handedness + 'B']) {
+        const gercek = 1 / fitScale;
+        const gercekte = Math.abs(pivot.scale.x - gercek) < gercek * 1e-3;
+        pivot.scale.setScalar(gercekte ? homeScale : gercek);  // tekrar basınca sığdırılmış boyuta döner
+      }
+      btnPrev[src.handedness + 'B'] = b;
       const basili = gp.buttons[3] && gp.buttons[3].pressed;   // thumbstick tıklaması
       if (basili && !btnPrev[src.handedness]) sifirla();
       btnPrev[src.handedness] = basili;
-      const ab = (gp.buttons[4] && gp.buttons[4].pressed) || (gp.buttons[5] && gp.buttons[5].pressed);
-      if (ab) {                           // A veya B: yaw (yatay dönüş) korunur, diğer eksenler ilk haline döner
+      const ab = gp.buttons[4] && gp.buttons[4].pressed;   // A / X
+      if (ab) {                           // A / X: yaw (yatay dönüş) korunur, diğer eksenler ilk haline döner
         const q = pivot.quaternion;
         if (Math.hypot(q.y, q.w) > 1e-4) {
           twistQ.set(0, q.y, 0, q.w).normalize();                       // mevcut yaw
